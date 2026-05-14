@@ -1,0 +1,154 @@
+name: Fork Release
+
+# Builds Linux binaries (amd64/arm64, glibc + musl) on tag push and
+# publishes them as GitHub Release assets on THIS fork's repository.
+# Uses the default GITHUB_TOKEN — no extra secrets required.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to publish the release under (e.g. v1.2.3-fork)'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  linux-glibc:
+    name: Linux glibc (${{ matrix.config.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: amd64
+            runner: ubuntu-latest
+            image: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            image: aarch64
+    runs-on: ${{ matrix.config.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build (manylinux_2_28)
+        run: |
+          docker run                                                             \
+            -v"$PWD:$PWD"                                                        \
+            -e GEN=ninja                                                         \
+            -e CC=gcc                                                            \
+            -e CXX=g++                                                           \
+            -e EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"  \
+            -e ENABLE_EXTENSION_AUTOLOADING=1                                    \
+            -e ENABLE_EXTENSION_AUTOINSTALL=1                                    \
+            quay.io/pypa/manylinux_2_28_${{ matrix.config.image }}               \
+            bash -c "
+              set -e
+              dnf install -y ninja-build python3.12 perl-IPC-Cmd
+              git config --global --add safe.directory \"$PWD\"
+              make -C \"$PWD\"
+            "
+
+      - name: Print platform
+        run: ./build/release/duckdb -c "PRAGMA platform;"
+
+      - name: Package artifacts
+        run: |
+          zip -j duckdb_cli-linux-${{ matrix.config.arch }}.zip build/release/duckdb
+          gzip -9 -k -n -c build/release/duckdb > duckdb_cli-linux-${{ matrix.config.arch }}.gz
+          zip -j libduckdb-linux-${{ matrix.config.arch }}.zip build/release/src/libduckdb*.* src/include/duckdb.h
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: duckdb-binaries-linux-${{ matrix.config.arch }}
+          path: |
+            libduckdb-linux-${{ matrix.config.arch }}.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}.gz
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            libduckdb-linux-${{ matrix.config.arch }}.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}.gz
+
+  linux-musl:
+    name: Linux musl (${{ matrix.config.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.config.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build (alpine:3.22)
+        run: |
+          docker run                                                             \
+            -v"$PWD:$PWD"                                                        \
+            -e GEN=ninja                                                         \
+            -e CC=gcc                                                            \
+            -e CXX=g++                                                           \
+            -e EXTENSION_CONFIGS="$PWD/.github/config/bundled_extensions.cmake"  \
+            -e ENABLE_EXTENSION_AUTOLOADING=1                                    \
+            -e ENABLE_EXTENSION_AUTOINSTALL=1                                    \
+            alpine:3.22                                                          \
+            sh -c "
+              set -e
+              apk add cmake g++ git make python3 samurai
+              git config --global --add safe.directory \"$PWD\"
+              make -C \"$PWD\"
+            "
+
+      - name: Package artifacts
+        run: |
+          zip -j duckdb_cli-linux-${{ matrix.config.arch }}-musl.zip build/release/duckdb
+          gzip -9 -k -n -c build/release/duckdb > duckdb_cli-linux-${{ matrix.config.arch }}-musl.gz
+          zip -j libduckdb-linux-${{ matrix.config.arch }}-musl.zip build/release/src/libduckdb*.* src/include/duckdb.h
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: duckdb-binaries-linux-${{ matrix.config.arch }}-musl
+          path: |
+            libduckdb-linux-${{ matrix.config.arch }}-musl.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}-musl.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}-musl.gz
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            libduckdb-linux-${{ matrix.config.arch }}-musl.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}-musl.zip
+            duckdb_cli-linux-${{ matrix.config.arch }}-musl.gz
